@@ -1,0 +1,30 @@
+[llmChat]
+linkBase = "http://127.0.0.1:7861/v1"
+modelChat = "gemini-3-pro-preview"
+modelList = [
+    "gemini-2.5-pro",
+    "gemini-2.5-flash",
+    "gemini-3-pro-preview",
+    # "gemma3:12b",
+    # "gemma3:27b",
+    # "deepseek-r1:1.5b",
+    # "deepseek-r1:32b",
+    # "gpt-oss:latest",
+    # "TaiwanPro:latest",
+    # "llama3.2-vision:latest",
+    # "TinyLlama:latest",
+]
+
+[apiToken]
+gemini_llm = [
+    "API_TOKEN_HERE",
+]
+
+[chatParams]
+num_predict = 600
+seed = 42
+temperature = 0.25
+top_p = 0.9
+min_p = 0.075
+repeat_penalty = 1.25
+mirostat = 2

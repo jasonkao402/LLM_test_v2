@@ -127,3 +127,5 @@ dmypy.json
 
 # auth files
 # config.toml
+llm_character_cards.db
+secrets/config.toml

@@ -124,7 +124,6 @@ dmypy.json
 # Pyre type checker
 .pyre/
 /temp
-Q*g
-subsystem_tests/imgs/*.jpg
-subsystem_tests/chat_history/*
-llm_character_cards.db
+
+# auth files
+# config.toml

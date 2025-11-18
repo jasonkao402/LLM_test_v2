@@ -3,12 +3,10 @@ import json
 import logging
 from abc import ABC
 from enum import Enum
-from typing import List
-import ollama_api as ollama_api
 from flask import Flask, render_template
 from flask_socketio import SocketIO
 import asyncio
-import numpy as np
+from gemini_adapter import GeminiAPIHandler
 
 class Team(Enum):
     PRO = 1
@@ -54,7 +52,7 @@ app = Flask(__name__)
 socketio = SocketIO(app, async_mode="threading")
 
 class Debater(ABC):
-    def __init__(self, name: str, topic, api: ollama_api.Ollama_API_Handler):
+    def __init__(self, name: str, topic, api: GeminiAPIHandler):
         self.name = name
         self.topic = topic
         self.team = Team.PRO if name == "正方" else Team.CON
@@ -108,7 +106,7 @@ class Debater(ABC):
 class Judge:
     """裁判評分系統"""
 
-    def __init__(self, api: ollama_api.Ollama_API_Handler):
+    def __init__(self, api: GeminiAPIHandler):
         self.api = api
 
     async def evaluate(self, arg: str):
@@ -150,7 +148,7 @@ class DebateController:
 
     async def start_debate(self):
         logging.info(f"辯論主題: {self.topic}")
-        self.api = ollama_api.Ollama_API_Handler()
+        self.api = GeminiAPIHandler()
         self.pro = Debater("正方", self.topic, self.api)
         self.con = Debater("反方", self.topic, self.api)
         self.judge = Judge(self.api)
@@ -197,16 +195,15 @@ class DebateController:
                     "update_con", {"text": f"論點 {j+1}/{self.prepare}\n{self.con.memory[-1]}"}
                 )
                 
-            # scores = np.zeros((len(self.pro.memory), 3))
             for team in [self.pro, self.con]:
-                scores = np.zeros((len(team.memory), 3))
+                scores = [0.0] * len(team.memory)
                 for i, rebut in enumerate(team.memory):
                     analysis, (credibility, validity) = await self.judge.evaluate(rebut)
                     scores[i] = (credibility, validity, credibility * validity)
                     socketio.emit(
                         "update_judge", {"text": f"{team.name} {i+1}/{len(team.memory)}: {credibility}, {validity}, {analysis}"}
                     )
-                team.round_score = np.sum(scores[:, 2])
+                team.round_score = sum(score[2] for score in scores)
                 team.memory = []
                 
             if self.pro.round_score > self.con.round_score:

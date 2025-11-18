@@ -2,7 +2,7 @@ import os
 import toml
 
 def loadToml():
-    tomlpath = './secrets/config.toml'
+    tomlpath = './config.toml'
     if not os.path.exists(tomlpath):
         print('config.toml not found, please check the file')
         return {}

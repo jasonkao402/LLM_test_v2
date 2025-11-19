@@ -8,6 +8,7 @@ from flask_socketio import SocketIO
 import asyncio
 from gemini_adapter import GeminiAPIHandler
 from google.genai import types
+import threading  # added
 
 class Team(Enum):
     PRO = 1
@@ -162,6 +163,14 @@ class DebateController:
         self.topic = topic
         self.rounds = rounds
         self.prepare = prepare
+        self.resume_event = threading.Event()  # added
+
+    async def wait_for_resume(self):  # added
+        socketio.emit("update_judge", {"text": "等待使用者開始下一回合..."})
+        socketio.emit("await_resume", {"text": "請點擊『下一回合』繼續"})
+        self.resume_event.clear()
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, self.resume_event.wait)
 
     async def start_debate(self):
         logging.info(f"辯論主題: {self.topic}")
@@ -178,16 +187,14 @@ class DebateController:
         await self.pro.prepare_arguments(self.prepare)
         await self.con.prepare_arguments(self.prepare)
         for arg in self.pro.arguments:
-            socketio.emit(
-                "update_pro", {"text": arg}
-            )
+            socketio.emit("update_pro", {"text": arg})
         for arg in self.con.arguments:
-            socketio.emit(
-                "update_con", {"text": arg}
-            )
+            socketio.emit("update_con", {"text": arg})
+        # 新增：讓使用者檢視生成的論點後再開始辯論
+        socketio.emit("update_judge", {"text": "檢視雙方論點後按『下一回合』開始辯論"})
+        await self.wait_for_resume()
         T_start = 0.9
         T_delta = 2
-
         for i in range(self.rounds):
             T = T_start / T_delta**i
             logging.info(f"回合 {i+1}/{self.rounds}, T={T}")
@@ -203,25 +210,27 @@ class DebateController:
             for j, arg in enumerate(self.con.arguments):
                 await self.pro.rebut(arg, T)
                 socketio.emit(
-                    "update_pro", {"text": f"論點 {j+1}/{self.prepare}\n{self.pro.memory[-1]}"}
+                    "update_pro",
+                    {"text": f"論點 {j+1}/{self.prepare}\n{self.pro.memory[-1]}"},
                 )
             for j, arg in enumerate(self.pro.arguments):
                 await self.con.rebut(arg, T)
                 socketio.emit(
-                    "update_con", {"text": f"論點 {j+1}/{self.prepare}\n{self.con.memory[-1]}"}
+                    "update_con",
+                    {"text": f"論點 {j+1}/{self.prepare}\n{self.con.memory[-1]}"},
                 )
-                
+
             for team in [self.pro, self.con]:
                 scores = [0.0] * len(team.memory)
-                for i, rebut in enumerate(team.memory):
+                for i_mem, rebut in enumerate(team.memory):  # renamed i to i_mem to avoid shadowing
                     analysis, (credibility, validity) = await self.judge.evaluate(rebut)
-                    scores[i] = (credibility, validity, credibility * validity)
+                    scores[i_mem] = (credibility, validity, credibility * validity)
                     socketio.emit(
-                        "update_judge", {"text": f"{team.name} {i+1}/{len(team.memory)}: {credibility}, {validity}, {analysis}"}
+                        "update_judge", {"text": f"{team.name} {i_mem+1}/{len(team.memory)}: {credibility}, {validity}, {analysis}"}
                     )
                 team.round_score = sum(score[2] for score in scores)
                 team.memory = []
-                
+
             if self.pro.round_score > self.con.round_score:
                 self.pro.total_score += 1
                 socketio.emit(
@@ -236,6 +245,11 @@ class DebateController:
                 socketio.emit(
                     "update_judge", {"text": f"正方: {self.pro.round_score}, 反方: {self.con.round_score}, 平手"}
                 )
+
+            # wait for user to resume unless last round
+            if i < self.rounds - 1:
+                await self.wait_for_resume()
+
         if self.pro.total_score > self.con.total_score:
             result = "正方勝"
         elif self.pro.total_score < self.con.total_score:
@@ -252,21 +266,23 @@ class DebateController:
 def index():
     return render_template("index.html")
 
-# @app.route("/api/end_debate", methods=["POST"])
-# def user_exit():
-    # data = request.get_json()
-    # user_id = data.get("user_id")
-    # print(f"使用者 {user_id} 離開頁面 (via Beacon)")
-    # return '', 204
+current_debate = None  # added
 
 @socketio.on('start_debate')
 def handle_start_debate(data):
+    global current_debate
     topic = data['topic']
     rounds = data['rounds']
     prepare_amount = data['prepare_amount']
-    debate = DebateController(topic, rounds, prepare_amount)
-    asyncio.run(debate.start_debate())
-    
+    current_debate = DebateController(topic, rounds, prepare_amount)
+    asyncio.run(current_debate.start_debate())
+
+@socketio.on('resume_debate')  # added
+def handle_resume_debate():
+    global current_debate
+    if current_debate is not None:
+        current_debate.resume_event.set()
+
 # 測試
 if __name__ == "__main__":
     socketio.run(app, debug=True, port=5000)

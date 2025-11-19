@@ -59,6 +59,7 @@
   <label>準備論點數:<input type="number" id="prepare_amount" value="3" /></label><br />
 
   <button onclick="startDebate()">開始辯論</button>
+  <button id="resume_button" onclick="resumeDebate()" disabled>下一回合</button>
 
   <div style="display: flex;">
     <div style="width: 33%; padding: 10px;">
@@ -90,6 +91,11 @@
       })
     }
 
+    function resumeDebate() {
+      socket.emit('resume_debate')
+      document.getElementById('resume_button').disabled = true
+    }
+
     function addMessage(elementId, text, role = 'default') {
       let container = document.getElementById(elementId)
       let newParagraph = document.createElement('p')
@@ -119,6 +125,12 @@
 
     socket.on('update_judge', function (data) {
       addMessage('judge_output', data.text, 'judge')
+    })
+
+    // 新增：收到等待事件時啟用下一回合按鈕
+    socket.on('await_resume', function (data) {
+      addMessage('judge_output', data.text, 'judge')
+      document.getElementById('resume_button').disabled = false
     })
 
     window.addEventListener('beforeunload', function () {

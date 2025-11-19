@@ -1,16 +1,9 @@
 import asyncio
-from typing import List, Dict, Optional
-
+from typing import List
 from google import genai
 from google.genai import types
 
 from config_loader import configToml
-
-
-class _ChatResponse:
-    def __init__(self, content: str):
-        self.content = content
-
 
 class GeminiAPIHandler:
     """A lightweight adapter to mimic Ollama chat interface using Gemini GenAI.
@@ -33,7 +26,7 @@ class GeminiAPIHandler:
         self._rr_current_count = 0  # Current count for the active client
         print(f"Initialized GeminiAPIHandler with {len(self._client_collection)} clients.")
 
-    async def generate_content(self, contents: List[types.Content], system_prompt) -> types.GenerateContentResponse:
+    async def generate_content_v1(self, contents: List[types.Content], system_prompt) -> types.GenerateContentResponse:
         # Wrapper to call the synchronous generate_content in an async way
         try:
             response = await self._client_collection[self._rr_index].aio.models.generate_content(
@@ -65,7 +58,7 @@ async def main():
         n = i+3
         contents = types.Content(role="user", parts=[types.Part.from_text(text=f"Return the Fibonacci sequence up to the {n}th term as a comma-separated list.")])
         
-        response = await api.generate_content(contents, system_prompt)
+        response = await api.generate_content_v1(contents, system_prompt)
         print("Fibonacci sequence:", response)
     
 # test code

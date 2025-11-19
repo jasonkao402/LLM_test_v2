@@ -7,6 +7,7 @@ from flask import Flask, render_template
 from flask_socketio import SocketIO
 import asyncio
 from gemini_adapter import GeminiAPIHandler
+from google.genai import types
 
 class Team(Enum):
     PRO = 1
@@ -51,6 +52,23 @@ for logger, handler in zip(debater_loggers.values(), debate_handlers.values()):
 app = Flask(__name__)
 socketio = SocketIO(app, async_mode="threading")
 
+def _convert_messages(messages, default_system="You are a helpful assistant."):
+    """Convert list[{'role','content'}] to (contents, system_prompt) for Gemini."""
+    system_prompt = default_system
+    contents = []
+    for m in messages:
+        role = m["role"]
+        if role == "system":
+            system_prompt = m["content"]
+            continue
+        contents.append(
+            types.Content(
+                role=role,
+                parts=[types.Part.from_text(text=m["content"])]
+            )
+        )
+    return contents, system_prompt
+
 class Debater(ABC):
     def __init__(self, name: str, topic, api: GeminiAPIHandler):
         self.name = name
@@ -70,9 +88,8 @@ class Debater(ABC):
                 "content": f'你正在參加一場辯論賽，請提供{num_args}個{("支持" if self.team == Team.PRO else "反對")}「{self.topic}」的論點, 論點為字串，格式使用 python list format, 範例: ["論點1", "論點2", ...]',
             }
         ]
-        response = await self.api.chat(messages)
-        response = response.content
-        # print(response)
+        contents, system_prompt = _convert_messages(messages)
+        response = await self.api.generate_content_v1(contents, system_prompt)
         response = response[response.find("[") : response.rfind("]")+1]
         parsed_response = json.loads(response)
         self.arguments.extend(parsed_response)
@@ -83,7 +100,7 @@ class Debater(ABC):
         T = round(T, 3)
         messages = [
             {
-                "role": "assistant",
+                "role": "model",
                 "content": f'我{("支持" if self.team == Team.PRO else "反對")}「{self.topic}」，因為'
                 + ", ".join(self.arguments),
             },
@@ -97,8 +114,8 @@ class Debater(ABC):
                 "content": f'你正在參加一場辯論賽，要回饋對手的論點，請依照指示的對抗強度(範圍0~1, 0: 融合對方論點，尋找共識平衡點, 1: 質疑對方可行性與可靠性)回饋，目前對抗強度={T}',
             },
         ]
-        response = await self.api.chat(messages)
-        response = response.content
+        contents, system_prompt = _convert_messages(messages)
+        response = await self.api.generate_content_v1(contents, system_prompt)
         self.memory.append(response)
         self.logger.info(f"{self.name} (T={T}) 反駁「{opponent_argument}」: {response}")
 
@@ -117,7 +134,9 @@ class Judge:
                 "content": f"你是一位辯論賽評審，請先客觀分析選手應答，且根據你對於應答內容的分析，分別給出兩個整數(範圍0~10)，代表選手應答內容之可靠度和有效反駁程度\n選手回應:{arg}",
             }
         ]
-        response_step1 = await self.api.chat(messages)
+        contents_step1, system_prompt_step1 = _convert_messages(messages, default_system="你是辯論賽評審。")
+        response_step1 = await self.api.generate_content_v1(contents_step1, system_prompt_step1)
+
         jsonPrompt = [
             {
                 "role": "system",
@@ -125,17 +144,15 @@ class Judge:
             },
             {
                 "role": "user",
-                "content": response_step1.content,
+                "content": response_step1,
             },
         ]
-        response_step2 = await self.api.chat(jsonPrompt)
-        response_step2 = response_step2.content
-        # print(json_response)
-        parsed_response = response_step2[response_step2.find("```json") + 7 : response_step2.rfind("```")]
-        print(parsed_response)
-        json_response = json.loads(parsed_response)
+        contents_step2, system_prompt_step2 = _convert_messages(jsonPrompt)
+        response_step2 = await self.api.generate_content_v1(contents_step2, system_prompt_step2)
+        response_step2 = response_step2[response_step2.find("```json") + 7 : response_step2.rfind("```")]
+        parsed_response = json.loads(response_step2)
             
-        return json_response["analysis"], (json_response["credibility"], json_response["validity"])
+        return parsed_response["analysis"], (parsed_response["credibility"], parsed_response["validity"])
 
 
 class DebateController:
@@ -170,7 +187,6 @@ class DebateController:
             )
         T_start = 0.9
         T_delta = 2
-        # rounds = 
 
         for i in range(self.rounds):
             T = T_start / T_delta**i
@@ -230,7 +246,6 @@ class DebateController:
             "update_judge", {"text": f"最終結果: {result}"}
         )
         logging.info(f"最終結果: {result}")
-        await self.api.close()
 
 
 @app.route("/")

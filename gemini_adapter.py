@@ -20,60 +20,54 @@ class GeminiAPIHandler:
     """
 
     def __init__(self):
-        http_options = {
-            "base_url": configToml["llmChat"]["link_build"],
-        }
+        # http_options = {
+        #     "base_url": configToml["llmChat"]["link_build"],
+        # }
         self._model = configToml["llmChat"]["modelChat"]
-        self._client = genai.Client(
-            api_key=configToml["apiToken"]["gemini_llm"][0],
-            http_options=http_options,
-        )
+        self._client_collection = [genai.Client(
+            api_key=configToml["apiToken"]["gemini_llm"][i],
+            # http_options=http_options,
+        ) for i in range(len(configToml["apiToken"]["gemini_llm"]))]
+        self._rr_index = 0  # Round-robin index
+        self._rr_count = 5  # Number of requests per client before switching
+        self._rr_current_count = 0  # Current count for the active client
+        print(f"Initialized GeminiAPIHandler with {len(self._client_collection)} clients.")
 
-    async def chat(self, messages: List[Dict[str, str]]) -> _ChatResponse:
-        # Extract optional system instructions and build contents
-        system_segments: List[str] = []
-        contents: List[types.Content] = []
-
-        for m in messages:
-            role = m.get("role", "user")
-            text = m.get("content", "")
-            if not isinstance(text, str):
-                text = str(text)
-
-            if role == "system":
-                system_segments.append(text)
-                continue
-
-            mapped_role = "model" if role == "assistant" else "user"
-            contents.append(
-                types.Content(
-                    role=mapped_role,
-                    parts=[types.Part.from_text(text)],
-                )
-            )
-
-        # Fallback: prepend system text as a user-prefixed instruction for reliability
-        if system_segments:
-            sys_text = "\n".join(system_segments)
-            contents.insert(
-                0,
-                types.Content(
-                    role="user",
-                    parts=[types.Part.from_text(sys_text)],
+    async def generate_content(self, contents: List[types.Content], system_prompt) -> types.GenerateContentResponse:
+        # Wrapper to call the synchronous generate_content in an async way
+        try:
+            response = await self._client_collection[self._rr_index].aio.models.generate_content(
+                model=configToml["llmChat"]["modelChat"],
+                contents=contents,
+                config=types.GenerateContentConfig(
+                    system_instruction=system_prompt,
+                    max_output_tokens=2048,
                 ),
             )
-
-        try:
-            resp = await self._client.aio.models.generate_content(
-                model=self._model,
-                contents=contents,
-            )
-            text = resp.text or ""
         except Exception as e:
-            text = f"GenAI Error: {e}"
+            print(f"GenAI Error: {e}")
+            return str(e)
+        else:
+            self._rr_current_count += 1
+            if self._rr_current_count >= self._rr_count:
+                self._rr_index = (self._rr_index + 1) % len(self._client_collection)
+                self._rr_current_count = 0
+        
+        # Google GenAI SDK 主要輸出為 `response.text`
+        # print(response)
+        return response.text
 
-        return _ChatResponse(text)
-
-    async def close(self):
-        # Current genai client doesn't require explicit close; keep API compatibility.
-        await asyncio.sleep(0)
+async def main():
+    api = GeminiAPIHandler()
+    system_prompt = "You are a helpful assistant."
+    # n = 12
+    for i in range(3):
+        n = i+3
+        contents = types.Content(role="user", parts=[types.Part.from_text(text=f"Return the Fibonacci sequence up to the {n}th term as a comma-separated list.")])
+        
+        response = await api.generate_content(contents, system_prompt)
+        print("Fibonacci sequence:", response)
+    
+# test code
+if __name__ == "__main__":
+    asyncio.run(main())

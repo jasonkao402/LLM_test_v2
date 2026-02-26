@@ -1,0 +1,547 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>PropNav Dogfight</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #111;
+            color: #eee;
+            font-family: 'Courier New', Courier, monospace;
+            user-select: none;
+            touch-action: none; /* Prevents mobile browser gestures like pull-to-refresh */
+        }
+        canvas {
+            display: block;
+        }
+        #ui-layer {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            background: rgba(0, 0, 0, 0.6);
+            padding: 10px;
+            border: 1px solid #444;
+            border-radius: 8px;
+            pointer-events: auto;
+            max-width: 250px;
+        }
+        .control-group {
+            margin-bottom: 5px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        label {
+            font-size: 12px;
+            margin-right: 5px;
+            flex: 1;
+        }
+        input[type=range] {
+            width: 80px;
+        }
+        .value-display {
+            width: 30px;
+            text-align: right;
+            font-size: 12px;
+            color: #00ffcc;
+        }
+        #game-over {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            text-align: center;
+            display: none;
+            pointer-events: none;
+            z-index: 10;
+        }
+        h1 { color: #ff3333; font-size: 32px; text-shadow: 0 0 10px #ff0000; margin: 0; }
+        h2 { color: #fff; font-size: 18px; margin-top: 10px; }
+        #score-display {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            font-size: 18px;
+            font-weight: bold;
+            pointer-events: none;
+        }
+        .instructions {
+            margin-top: 5px;
+            font-size: 10px;
+            color: #aaa;
+            border-top: 1px solid #555;
+            padding-top: 5px;
+        }
+        /* Mobile prompt */
+        #mobile-hint {
+            position: absolute;
+            bottom: 20px;
+            width: 100%;
+            text-align: center;
+            color: rgba(255,255,255,0.3);
+            font-size: 14px;
+            pointer-events: none;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="ui-layer">
+        <div style="margin-bottom:5px; font-weight:bold; color:#fff; font-size:12px;">CONFIG</div>
+        
+        <div class="control-group">
+            <label>Speed</label>
+            <input type="range" id="slider-speed" min="3" max="12" step="0.5" value="6">
+            <span id="val-speed" class="value-display">6</span>
+        </div>
+
+        <div class="control-group">
+            <label>Agility</label>
+            <input type="range" id="slider-nav" min="1" max="6" step="0.1" value="3.5">
+            <span id="val-nav" class="value-display">3.5</span>
+        </div>
+
+        <div class="control-group">
+            <label>Spawn Rate</label>
+            <input type="range" id="slider-spawn" min="10" max="200" step="10" value="60">
+            <span id="val-spawn" class="value-display">60</span>
+        </div>
+
+        <div class="control-group">
+            <label>Life Limit</label>
+            <input type="range" id="slider-life" min="1" max="10" step="0.5" value="4">
+            <span id="val-life" class="value-display">4s</span>
+        </div>
+
+        <button onclick="resetGame()" style="width:100%; padding: 5px; background:#333; color:white; border:1px solid #555; cursor:pointer; margin-top:5px; font-size:12px;">RESTART</button>
+        
+        <div class="instructions">
+            <b>Desktop:</b> Arrows to Steer/Thrust<br>
+            <b>Mobile:</b> Touch & Drag to Steer + Thrust
+        </div>
+    </div>
+
+    <div id="score-display">TIME: 0.0s</div>
+    <div id="mobile-hint">TOUCH & DRAG TO FLY</div>
+
+    <div id="game-over">
+        <h1>DESTROYED</h1>
+        <h2 id="final-score">Survived: 0s</h2>
+        <p>Tap RESTART to try again</p>
+    </div>
+
+    <canvas id="gameCanvas"></canvas>
+
+<script>
+/**
+ * UTILS
+ */
+const degToRad = (d) => d * (Math.PI / 180);
+function normalizeAngle(angle) {
+    while (angle > Math.PI) angle -= Math.PI * 2;
+    while (angle < -Math.PI) angle += Math.PI * 2;
+    return angle;
+}
+
+/**
+ * GAME VARIABLES
+ */
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+let width, height;
+
+// Inputs
+const keys = { ArrowUp: false, ArrowLeft: false, ArrowRight: false };
+const touchInput = { active: false, targetAngle: null };
+
+// Config
+const config = {
+    missileSpeed: 6,
+    navConstant: 3.5,
+    spawnInterval: 60,
+    missileLife: 4.0 // Seconds
+};
+
+// State
+let player;
+let missiles = [];
+let particles = [];
+let frameCount = 0;
+let score = 0;
+let isGameOver = false;
+let startTime = 0;
+
+/**
+ * CLASSES
+ */
+class Particle {
+    constructor(x, y, angle, speed, colorMode='fire') {
+        this.x = x;
+        this.y = y;
+        this.vx = Math.cos(angle) * speed + (Math.random() - 0.5);
+        this.vy = Math.sin(angle) * speed + (Math.random() - 0.5);
+        this.life = 1.0;
+        this.decay = 0.02 + Math.random() * 0.03;
+        this.colorMode = colorMode;
+    }
+
+    update() {
+        this.x += this.vx;
+        this.y += this.vy;
+        this.life -= this.decay;
+    }
+
+    draw(ctx) {
+        if (this.life <= 0) return;
+        ctx.globalAlpha = this.life;
+        
+        let r, g, b;
+        if(this.colorMode === 'fire') {
+            if (this.life > 0.7) { r=100; g=200; b=255; }
+            else if (this.life > 0.4) { r=255; g=100; b=50; }
+            else { r=100; g=100; b=100; }
+        } else {
+            // Explosion debris
+            r=255; g=200; b=50;
+        }
+
+        ctx.fillStyle = `rgb(${r},${g},${b})`;
+        ctx.beginPath();
+        ctx.arc(this.x, this.y, 3 * this.life + 1, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.globalAlpha = 1.0;
+    }
+}
+
+class Player {
+    constructor() {
+        this.x = width / 2;
+        this.y = height / 2;
+        this.angle = -Math.PI / 2; 
+        this.vel = { x: 0, y: 0 };
+        this.speed = 0;
+        this.maxSpeed = 8;
+        this.turnRate = 0.08;
+        this.friction = 0.98;
+        this.thrust = 0.25;
+    }
+
+    update() {
+        let isThrusting = keys.ArrowUp || touchInput.active;
+        let turnLeft = keys.ArrowLeft;
+        let turnRight = keys.ArrowRight;
+
+        // Mobile Steering Logic
+        if (touchInput.active && touchInput.targetAngle !== null) {
+            // Calculate difference between current heading and touch direction
+            let diff = normalizeAngle(touchInput.targetAngle - this.angle);
+            if (Math.abs(diff) > 0.1) {
+                if (diff > 0) turnRight = true;
+                if (diff < 0) turnLeft = true;
+            }
+        }
+
+        if (turnLeft) this.angle -= this.turnRate;
+        if (turnRight) this.angle += this.turnRate;
+
+        if (isThrusting) {
+            this.vel.x += Math.cos(this.angle) * this.thrust;
+            this.vel.y += Math.sin(this.angle) * this.thrust;
+            
+            // Particles
+            for(let i=0; i<3; i++) {
+                particles.push(new Particle(
+                    this.x - Math.cos(this.angle)*15, 
+                    this.y - Math.sin(this.angle)*15, 
+                    this.angle + Math.PI + (Math.random()-0.5)*0.5, 
+                    2
+                ));
+            }
+        }
+
+        this.vel.x *= this.friction;
+        this.vel.y *= this.friction;
+
+        const currentSpeed = Math.sqrt(this.vel.x**2 + this.vel.y**2);
+        if (currentSpeed > this.maxSpeed) {
+            const ratio = this.maxSpeed / currentSpeed;
+            this.vel.x *= ratio;
+            this.vel.y *= ratio;
+        }
+
+        this.x += this.vel.x;
+        this.y += this.vel.y;
+
+        // Screen Wrap
+        if (this.x < 0) this.x = width;
+        if (this.x > width) this.x = 0;
+        if (this.y < 0) this.y = height;
+        if (this.y > height) this.y = 0;
+    }
+
+    draw(ctx) {
+        ctx.save();
+        ctx.translate(this.x, this.y);
+        ctx.rotate(this.angle);
+
+        ctx.fillStyle = '#eee';
+        ctx.beginPath();
+        ctx.moveTo(15, 0);
+        ctx.lineTo(-10, 10);
+        ctx.lineTo(-5, 0);
+        ctx.lineTo(-10, -10);
+        ctx.closePath();
+        ctx.fill();
+        
+        ctx.fillStyle = '#00aaff';
+        ctx.beginPath();
+        ctx.moveTo(5, 0);
+        ctx.lineTo(-2, 3);
+        ctx.lineTo(-2, -3);
+        ctx.fill();
+
+        ctx.restore();
+    }
+}
+
+class Missile {
+    constructor() {
+        if (Math.random() < 0.5) {
+            this.x = Math.random() < 0.5 ? -20 : width + 20;
+            this.y = Math.random() * height;
+        } else {
+            this.x = Math.random() * width;
+            this.y = Math.random() < 0.5 ? -20 : height + 20;
+        }
+
+        this.angle = Math.atan2(player.y - this.y, player.x - this.x);
+        this.speed = config.missileSpeed;
+        this.prevLosAngle = Math.atan2(player.y - this.y, player.x - this.x);
+        
+        // Lifetime in frames (approx 60fps)
+        this.lifeFrames = config.missileLife * 60;
+        this.maxLifeFrames = this.lifeFrames;
+    }
+
+    update() {
+        this.lifeFrames--;
+        
+        // Explode if life runs out
+        if (this.lifeFrames <= 0) {
+            this.explode();
+            return false; // Signal to remove
+        }
+
+        // PropNav Logic
+        const dx = player.x - this.x;
+        const dy = player.y - this.y;
+        let currentLosAngle = Math.atan2(dy, dx);
+        let deltaLos = normalizeAngle(currentLosAngle - this.prevLosAngle);
+        let turnCommand = config.navConstant * deltaLos;
+
+        const maxTurn = 0.15; 
+        if (turnCommand > maxTurn) turnCommand = maxTurn;
+        if (turnCommand < -maxTurn) turnCommand = -maxTurn;
+
+        this.angle += turnCommand;
+        this.prevLosAngle = currentLosAngle;
+
+        this.x += Math.cos(this.angle) * this.speed;
+        this.y += Math.sin(this.angle) * this.speed;
+
+        if (frameCount % 3 === 0) {
+            particles.push(new Particle(this.x, this.y, this.angle + Math.PI, 1));
+        }
+
+        return true; // Keep alive
+    }
+
+    explode() {
+        for(let i=0; i<15; i++) {
+            particles.push(new Particle(this.x, this.y, Math.random()*Math.PI*2, Math.random()*3 + 1, 'debris'));
+        }
+    }
+
+    draw(ctx) {
+        ctx.save();
+        ctx.translate(this.x, this.y);
+        ctx.rotate(this.angle);
+
+        // Flash white when about to expire
+        if (this.lifeFrames < 60 && Math.floor(Date.now()/50)%2===0) {
+             ctx.fillStyle = '#fff';
+        } else {
+             ctx.fillStyle = '#ff3333';
+        }
+        
+        ctx.fillRect(-10, -2, 20, 4);
+        ctx.fillStyle = '#cc0000';
+        ctx.fillRect(-10, -6, 4, 12);
+
+        ctx.restore();
+    }
+}
+
+/**
+ * GAME LOOP & EVENTS
+ */
+
+function init() {
+    window.addEventListener('resize', resize);
+    
+    // Keyboard
+    document.addEventListener('keydown', e => {
+        if(keys.hasOwnProperty(e.code)) keys[e.code] = true;
+        if(isGameOver && e.code === 'Space') resetGame();
+    });
+    document.addEventListener('keyup', e => {
+        if(keys.hasOwnProperty(e.code)) keys[e.code] = false;
+    });
+
+    // Touch
+    let touchStartX = 0;
+    let touchStartY = 0;
+
+    canvas.addEventListener('touchstart', e => {
+        e.preventDefault(); // Stop scrolling
+        if(isGameOver) { resetGame(); return; }
+        
+        touchInput.active = true;
+        const t = e.touches[0];
+        touchStartX = t.clientX;
+        touchStartY = t.clientY;
+        // Initial angle is null until drag happens
+        touchInput.targetAngle = player.angle; 
+    }, {passive: false});
+
+    canvas.addEventListener('touchmove', e => {
+        e.preventDefault(); 
+        if (!touchInput.active) return;
+        const t = e.touches[0];
+        const dx = t.clientX - touchStartX;
+        const dy = t.clientY - touchStartY;
+        
+        // Only steer if drag is significant
+        if (Math.hypot(dx, dy) > 10) {
+            touchInput.targetAngle = Math.atan2(dy, dx);
+        }
+    }, {passive: false});
+
+    canvas.addEventListener('touchend', e => {
+        e.preventDefault();
+        touchInput.active = false;
+    });
+
+    // Config Listeners
+    setupSlider('slider-speed', 'val-speed', 'missileSpeed', false);
+    setupSlider('slider-nav', 'val-nav', 'navConstant', false);
+    setupSlider('slider-spawn', 'val-spawn', 'spawnInterval', true);
+    setupSlider('slider-life', 'val-life', 'missileLife', false, 's');
+
+    resize();
+    resetGame();
+    loop();
+}
+
+function setupSlider(id, valId, configKey, inverse, suffix='') {
+    const el = document.getElementById(id);
+    const disp = document.getElementById(valId);
+    el.addEventListener('input', (e) => {
+        const val = parseFloat(e.target.value);
+        disp.innerText = val + suffix;
+        config[configKey] = val; 
+    });
+}
+
+function resize() {
+    width = window.innerWidth;
+    height = window.innerHeight;
+    canvas.width = width;
+    canvas.height = height;
+}
+
+function resetGame() {
+    player = new Player();
+    missiles = [];
+    particles = [];
+    score = 0;
+    isGameOver = false;
+    frameCount = 0;
+    startTime = Date.now();
+    document.getElementById('game-over').style.display = 'none';
+    
+    // Refresh Config
+    config.missileSpeed = parseFloat(document.getElementById('slider-speed').value);
+    config.navConstant = parseFloat(document.getElementById('slider-nav').value);
+    config.spawnInterval = parseFloat(document.getElementById('slider-spawn').value);
+    config.missileLife = parseFloat(document.getElementById('slider-life').value);
+}
+
+function loop() {
+    requestAnimationFrame(loop);
+
+    ctx.fillStyle = 'rgba(17, 17, 17, 0.4)'; 
+    ctx.fillRect(0, 0, width, height);
+
+    if (isGameOver) return;
+
+    score = ((Date.now() - startTime) / 1000).toFixed(1);
+    document.getElementById('score-display').innerText = "TIME: " + score + "s";
+    frameCount++;
+
+    player.update();
+    player.draw(ctx);
+
+    if (frameCount % Math.floor(config.spawnInterval) === 0) {
+        missiles.push(new Missile());
+    }
+
+    for (let i = missiles.length - 1; i >= 0; i--) {
+        const m = missiles[i];
+        
+        // update returns false if dead (lifetime expired)
+        if (!m.update()) {
+            missiles.splice(i, 1);
+            continue;
+        }
+        
+        m.draw(ctx);
+
+        if (m.x < -100 || m.x > width + 100 || m.y < -100 || m.y > height + 100) {
+            missiles.splice(i, 1);
+            continue;
+        }
+
+        const dist = Math.hypot(player.x - m.x, player.y - m.y);
+        if (dist < 20) {
+            gameOver();
+        }
+    }
+
+    ctx.globalCompositeOperation = 'lighter';
+    for (let i = particles.length - 1; i >= 0; i--) {
+        particles[i].update();
+        particles[i].draw(ctx);
+        if (particles[i].life <= 0) particles.splice(i, 1);
+    }
+    ctx.globalCompositeOperation = 'source-over';
+}
+
+function gameOver() {
+    isGameOver = true;
+    document.getElementById('final-score').innerText = "Survived: " + score + "s";
+    document.getElementById('game-over').style.display = 'block';
+    
+    for(let i=0; i<50; i++) {
+        particles.push(new Particle(player.x, player.y, Math.random()*Math.PI*2, Math.random()*5));
+    }
+}
+
+init();
+
+</script>
+</body>
+</html>
